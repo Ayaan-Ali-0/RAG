@@ -32,7 +32,7 @@ from rbs_rag.models import StreamingChunk
 
 log = logging.getLogger(__name__)
 
-ROOT_DIR = Path(".rbs_rag").resolve()
+ROOT_DIR = Path(os.getenv("RAG_ROOT_DIR", ".rbs_rag")).resolve()
 ADMIN_DB_PATH = ROOT_DIR / "admin.db"
 TENANTS_DIR = ROOT_DIR / "tenants"
 
@@ -204,7 +204,10 @@ def _get_tenant_config(tenant: dict) -> AppConfig:
             provider=tenant["llm_provider"], api_key=tenant["llm_api_key"],
             model=tenant["llm_model"], base_url=tenant["llm_base_url"],
         ),
-        qdrant=QdrantConfig(host="localhost", port=6333),
+        qdrant=QdrantConfig(
+            host=os.getenv("QDRANT_HOST", "localhost"),
+            port=int(os.getenv("QDRANT_PORT", "6333")),
+        ),
         rate_limit=RateLimitConfig(enabled=True, requests_per_minute=60),
         security=SecurityConfig(encrypt_keys=False, admin_auth_enabled=False),
         observability=ObservabilityConfig(health_endpoint=True, structured_logging=True),
@@ -376,7 +379,9 @@ async def health_check():
     qdrant_status = "disconnected"
     try:
         from qdrant_client import QdrantClient
-        c = QdrantClient("http://localhost:6333")
+        qdrant_host = os.getenv("QDRANT_HOST", "localhost")
+        qdrant_port = os.getenv("QDRANT_PORT", "6333")
+        c = QdrantClient(f"http://{qdrant_host}:{qdrant_port}")
         c.get_collections()
         qdrant_status = "connected"
     except Exception:
