@@ -5,6 +5,7 @@
 **Objective:** Deploy the TenBit RAG Platform as a fully containerized stack using Docker Compose on a single VPS.
 
 **Why Docker Compose?**
+
 - Single-command deployment across any Linux VPS
 - Environment parity between dev/staging/production
 - Isolated services with defined resource limits
@@ -16,6 +17,7 @@
 **Team Requirements:** 1 DevOps engineer (part-time)
 
 **Key Risks:**
+
 - Docker daemon resource overhead (~3–5% CPU)
 - Persistent volume management for databases
 - Network security between containers
@@ -48,6 +50,7 @@
 ```
 
 **Service Communication:**
+
 - Nginx terminates SSL → proxies `/api/` to RAG API, `/` to static frontend
 - RAG API connects to PostgreSQL (documents), Qdrant (vectors), Redis (cache)
 - All services communicate over internal Docker network — no public ports except Nginx
@@ -58,25 +61,25 @@
 
 ### Minimum Viable Stack
 
-| Service        | vCPU | RAM   | Storage | Image/Notes                  |
-|---------------|------|-------|---------|------------------------------|
-| RAG API       | 1    | 1 GB  | 500 MB  | Custom Dockerfile            |
-| Qdrant        | 1    | 1 GB  | 5 GB    | qdrant/qdrant:latest         |
-| PostgreSQL    | 1    | 1 GB  | 10 GB   | postgres:16-alpine           |
-| Redis         | 0.5  | 256 MB| N/A     | redis:7-alpine               |
-| Nginx         | 0.5  | 128 MB| 100 MB  | nginx:alpine                 |
-| **Total**     | **4**| **3.5 GB**| **16 GB** |                          |
+| Service         | vCPU        | RAM              | Storage         | Image/Notes          |
+| --------------- | ----------- | ---------------- | --------------- | -------------------- |
+| RAG API         | 1          | 1 GB             | 500 MB          | Custom Dockerfile    |
+| Qdrant          | 1           | 1 GB             | 5 GB            | qdrant/qdrant:latest |
+| PostgreSQL      | 1           | 1 GB             | 10 GB           | postgres:16-alpine   |
+| Redis           | 0.5         | 256 MB           | N/A             | redis:7-alpine       |
+| Nginx           | 0.5         | 128 MB           | 100 MB          | nginx:alpine         |
+| **Total** | **4** | **3.5 GB** | **16 GB** |                      |
 
 ### Recommended Production Stack (10+ tenants, 1000+ docs/tenant)
 
-| Service        | vCPU | RAM   | Storage | Notes                        |
-|---------------|------|-------|---------|------------------------------|
-| RAG API       | 2    | 2 GB  | 1 GB    | Multi-worker uvicorn         |
-| Qdrant        | 2    | 4 GB  | 50 GB   | HNSW index requires RAM     |
-| PostgreSQL    | 2    | 2 GB  | 50 GB   | With indexing + partitions  |
-| Redis         | 1    | 512 MB| N/A     | Session + cache              |
-| Nginx         | 1    | 256 MB| 100 MB  | With rate limiting           |
-| **Total**     | **8**| **9 GB** | **101 GB** |                        |
+| Service         | vCPU        | RAM            | Storage          | Notes                      |
+| --------------- | ----------- | -------------- | ---------------- | -------------------------- |
+| RAG API         | 2           | 2 GB           | 1 GB             | Multi-worker uvicorn       |
+| Qdrant          | 2           | 4 GB           | 50 GB            | HNSW index requires RAM    |
+| PostgreSQL      | 2           | 2 GB           | 50 GB            | With indexing + partitions |
+| Redis           | 1           | 512 MB         | N/A              | Session + cache            |
+| Nginx           | 1           | 256 MB         | 100 MB           | With rate limiting         |
+| **Total** | **8** | **9 GB** | **101 GB** |                            |
 
 ---
 
@@ -84,20 +87,20 @@
 
 ### Estimated Monthly Cost by Provider (Recommended Stack)
 
-| Provider      | Plan          | vCPU | RAM  | Storage | Monthly Cost | Notes                         |
-|---------------|---------------|------|------|---------|-------------|-------------------------------|
-| **Hetzner**   | CX32 + CAX31  | 6    | 8 GB | 80 GB   | **~€25**    | Best value in Europe          |
-| **Hostinger** | VPS Premium 4 | 4    | 8 GB | 200 GB  | **~$25**    | Good global coverage          |
-| **DigitalOcean** | Premium 8GB | 4    | 8 GB | 160 GB  | **~$48**    | Higher but reliable           |
-| **Linode**    | Dedicated 8GB | 4    | 8 GB | 160 GB  | **~$48**    | Comparable to DO              |
+| Provider               | Plan          | vCPU | RAM  | Storage | Monthly Cost    | Notes                |
+| ---------------------- | ------------- | ---- | ---- | ------- | --------------- | -------------------- |
+| **Hetzner**      | CX32 + CAX31  | 6    | 8 GB | 80 GB   | **~€25** | Best value in Europe |
+| **Hostinger**    | VPS Premium 4 | 4    | 8 GB | 200 GB  | **~$25**  | Good global coverage |
+| **DigitalOcean** | Premium 8GB   | 4    | 8 GB | 160 GB  | **~$48**  | Higher but reliable  |
+| **Linode**       | Dedicated 8GB | 4    | 8 GB | 160 GB  | **~$48**  | Comparable to DO     |
 
 ### Minimum Stack Cost
 
-| Provider      | Plan          | vCPU | RAM  | Monthly Cost |
-|---------------|---------------|------|------|-------------|
-| **Hetzner**   | CX22 (CCX12) | 2    | 4 GB | **~€5–10** |
-| **Hostinger** | VPS Premium 2| 2    | 4 GB | **~$12**    |
-| **DigitalOcean** | Basic 4GB  | 2    | 4 GB | **~$24**    |
+| Provider               | Plan          | vCPU | RAM  | Monthly Cost       |
+| ---------------------- | ------------- | ---- | ---- | ------------------ |
+| **Hetzner**      | CX22 (CCX12)  | 2    | 4 GB | **~€5–10** |
+| **Hostinger**    | VPS Premium 2 | 2    | 4 GB | **~$12**     |
+| **DigitalOcean** | Basic 4GB     | 2    | 4 GB | **~$24**     |
 
 > **Note:** All costs are for the VPS instance. Docker imposes no additional licensing fee. PostgreSQL, Redis, Qdrant are all open-source.
 
@@ -391,6 +394,7 @@ jobs:
 ## 6. Security & Backup
 
 ### Security Measures
+
 - Run containers as non-root user (use `user: 1000:1000` in compose)
 - Database passwords stored in `.env.production` (never committed)
 - Internal network only — no public ports except Nginx
@@ -400,14 +404,15 @@ jobs:
 
 ### Backup Strategy
 
-| Data           | Method                         | Frequency | Retention |
-|---------------|-------------------------------|-----------|-----------|
-| PostgreSQL    | `pg_dump` via cron → S3       | Daily     | 30 days   |
-| Qdrant        | Snapshot API + S3 upload      | Daily     | 7 days    |
-| Redis         | RDB snapshot → S3             | Hourly    | 24 hours  |
-| .rbs_rag      | tar + S3 upload                | Daily     | 14 days   |
+| Data       | Method                     | Frequency | Retention |
+| ---------- | -------------------------- | --------- | --------- |
+| PostgreSQL | `pg_dump` via cron → S3 | Daily     | 30 days   |
+| Qdrant     | Snapshot API + S3 upload   | Daily     | 7 days    |
+| Redis      | RDB snapshot → S3         | Hourly    | 24 hours  |
+| .rbs_rag   | tar + S3 upload            | Daily     | 14 days   |
 
 ### Monitoring
+
 - `docker compose logs --tail=100 -f`
 - Prometheus node_exporter + Grafana dashboard
 - Uptime monitoring with UptimeRobot (free tier)
