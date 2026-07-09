@@ -56,6 +56,7 @@ def load_document(path: Path, metadata: dict | None = None, use_ocr: bool = Fals
     }
     if metadata:
         base_metadata.update(metadata)
+    ocr_was_applied = base_metadata["ocr_applied"]
     return LoadedDocument(
         document_id=_document_id(path),
         path=str(path),
@@ -63,6 +64,7 @@ def load_document(path: Path, metadata: dict | None = None, use_ocr: bool = Fals
         document_type=suffix.lstrip(".") or "text",
         text=text,
         metadata=base_metadata,
+        ocr_applied=ocr_was_applied,
     )
 
 

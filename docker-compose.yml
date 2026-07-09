@@ -69,6 +69,10 @@ services:
       - RAG_ROOT_DIR=/data/.rbs_rag
       - QDRANT_HOST=${RAG_QDRANT_HOST:-qdrant}
       - QDRANT_PORT=${RAG_QDRANT_PORT:-6333}
+      - RAG_ENCRYPTION_KEY=${RAG_ENCRYPTION_KEY:-}
+      - RAG_ADMIN_JWT_SECRET=${RAG_ADMIN_JWT_SECRET:-}
+      - RAG_ADMIN_PASSWORD=${RAG_ADMIN_PASSWORD:-admin}
+      - RAG_TERMINAL_ENABLED=${RAG_TERMINAL_ENABLED:-true}
       - UVICORN_WORKERS=${UVICORN_WORKERS:-4}
     depends_on:
       qdrant:

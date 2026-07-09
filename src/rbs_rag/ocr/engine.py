@@ -60,20 +60,26 @@ class OCREngine:
         mistral_api_key: str = "",
         languages: list[str] = None,
         use_gpu: bool = False,
-        primary_engine: str = "paddle",
+        primary_engine: str = "nemotron",
         dpi: int = 150,
+        nemotron_api_key: str = "",
+        nemotron_base_url: str = "http://localhost:8000",
     ):
         self.mistral_api_key = mistral_api_key
         self.languages = languages or ["en"]
         self.use_gpu = use_gpu
         self.primary_engine = primary_engine
         self.dpi = dpi
+        self.nemotron_api_key = nemotron_api_key
+        self.nemotron_base_url = nemotron_base_url
 
         self.orchestrator = create_orchestrator(
             mistral_api_key=mistral_api_key,
             languages=self.languages,
             use_gpu=use_gpu,
             primary_engine=primary_engine,
+            nemotron_api_key=nemotron_api_key,
+            nemotron_base_url=nemotron_base_url,
         )
         self.pdf_processor = PDFProcessor(dpi=dpi)
         self.preprocessor = ImagePreprocessor()

@@ -27,11 +27,12 @@ Our platform integrates all architectural layers requested in your specification
 
 ### 2.1 OCR Service (Intelligent Document Processing)
 
-The OCR Service is a production-ready microservice built on FastAPI with a pluggable engine architecture:
+The OCR Service is a production-ready microservice built on FastAPI with a pluggable engine architecture. It runs **fully locally by default** using PaddleOCR (no API key required). Mistral cloud OCR is used only if `MISTRAL_API_KEY` is configured.
 
 | Feature | Implementation |
 |---------|---------------|
-| **Pluggable Engine Architecture** | Strategy Pattern with `MistralOCREngine` (primary, cloud) → `PaddleOCREngine` (fallback, local) |
+| **Pluggable Engine Architecture** | Strategy Pattern with `MistralOCREngine` (optional, cloud) → `PaddleOCREngine` (default, local, no API key) |
+| **Local Operation** | PaddleOCR runs locally via ONNX Runtime on CPU. GPU acceleration optional. ~15MB model download on first use |
 | **File Format Support** | Images (PNG, JPEG, WEBP, BMP, TIFF), PDFs (digital & scanned), Batch processing |
 | **Rich Structured Output** | Full text, Markdown, HTML tables, hyperlinks, paragraphs/lines/words, bounding boxes, entities (URLs, emails, phones) |
 | **Hybrid PDF Pipeline** | Native text extraction for digital PDFs → OCR only for scanned pages (configurable threshold) |
@@ -41,6 +42,8 @@ The OCR Service is a production-ready microservice built on FastAPI with a plugg
 | **Production-Grade API** | Rate limiting (60 req/min/IP), API key auth, CORS, request logging, health checks, file size limits |
 | **Observability** | Structured JSON logging, per-request tracing (X-Request-ID), timing metrics, Sentry integration |
 
+**Resilience:** If the OCR microservice container stops, the embedded OCR engine in RAG core (`src/rbs_rag/ocr/`) takes over automatically using the same PaddleOCR model.
+
 **Integration with RAG Pipeline:**
 - Documents that fail text extraction (scanned PDFs, images) automatically route to OCR service
 - OCR results (text, markdown, tables) feed directly into hierarchical chunking pipeline
@@ -48,10 +51,11 @@ The OCR Service is a production-ready microservice built on FastAPI with a plugg
 
 ### 2.2 Web Scraper Service (Intelligent Content Ingestion)
 
-The Scraper Service is a production-ready web scraping platform with recursive crawling:
+The Scraper Service is a production-ready web scraping platform with recursive crawling. It runs **fully locally** using httpx + BeautifulSoup4 + Playwright. No API key required.
 
 | Feature | Implementation |
 |---------|---------------|
+| **Local Operation** | All fetching (httpx), rendering (Playwright), and parsing (BeautifulSoup4) runs locally. No external API dependency |
 | **Recursive Web Crawling** | Queue-based scheduling, depth control, domain filtering, robots.txt compliance, sitemap discovery |
 | **Content Type Detection** | HTML, PDF, Images, Videos, Office docs, Archives, JSON/XML with automatic routing |
 | **Intelligent Processing** | Deduplication, query param filtering, redirect handling, error tracking, progress callbacks |
@@ -62,6 +66,8 @@ The Scraper Service is a production-ready web scraping platform with recursive c
 | **Media Proxy** | CORS bypass for Facebook CDN, DASH video+audio merge via ffmpeg |
 | **SQLite Storage** | Sessions, posts, reels with full-text search, filtering, pagination |
 | **Excel Export** | Embedded images (160×160), hyperlinked URLs, frozen headers, streaming response |
+
+**Resilience:** If the scraper service container stops, in-progress crawl jobs are lost (in-memory queue). Already-scraped content persists in SQLite. Container restarts automatically via `restart: unless-stopped`.
 
 **Integration with RAG Pipeline:**
 - Users submit URLs via dashboard → Scraper extracts content → Ingested into RAG
@@ -78,11 +84,11 @@ Global Admin Store (admin.db)
        ↓
        ├─► Client A Workspace (tenants/client-a/)
        │      ├── Documents Folder (PDF, DOCX, MD, HTML)
-       │      └── Isolated DB Index (rag.db) [Gemini API Key]
+       │      └── Isolated DB Index (rag.db) [Gemini API Key — per client]
        │
        └─► Client B Workspace (tenants/client-b/)
               ├── Documents Folder (PDF, DOCX, MD, HTML)
-              └── Isolated DB Index (rag.db) [OpenAI / Anthropic API Key]
+              └── Isolated DB Index (rag.db) [OpenAI / Anthropic API Key — per client]
 ```
 
 ### Complete Database & File Isolation
@@ -90,6 +96,7 @@ Global Admin Store (admin.db)
 - **Isolated Client Database (rag.db)**: Located in `tenants/{tenant_id}/rag.db`. Contains only the client's documents, chunks, session turns, and user memory. Connection pools are separate.
 - **Isolated Storage Folder**: Located in `tenants/{tenant_id}/documents/`. Physical document files are saved in separate directories.
 - **API Key & Endpoint Isolation**: A client makes calls to `/api/v1/chat` using their header `X-API-Key`. The request resolves the client, opens their database, calls their configured LLM endpoint, and queries only their index.
+- **Per-Client LLM Keys**: Each client brings their own LLM API key. The platform starts with zero API keys. This enables multi-tenant setups where each client uses their own LLM provider and billing account.
 
 ---
 

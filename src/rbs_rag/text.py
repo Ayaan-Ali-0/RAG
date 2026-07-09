@@ -15,7 +15,12 @@ def tokenize(text: str) -> list[str]:
 def cosine_similarity(left: list[float], right: list[float]) -> float:
     if not left or not right or len(left) != len(right):
         return 0.0
-    return sum(a * b for a, b in zip(left, right))
+    dot = sum(a * b for a, b in zip(left, right))
+    norm_left = math.sqrt(sum(a * a for a in left))
+    norm_right = math.sqrt(sum(b * b for b in right))
+    if norm_left == 0 or norm_right == 0:
+        return 0.0
+    return dot / (norm_left * norm_right)
 
 
 def l2_normalize(values: Iterable[float]) -> list[float]:

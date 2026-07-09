@@ -38,8 +38,10 @@ class Settings(BaseSettings):
     service_version: str = "1.0.0"
     
     # OCR Engine Strategy
-    primary_ocr_engine: str = "mistral"
+    primary_ocr_engine: str = "nemotron"
     mistral_api_key: str = ""
+    nemotron_api_key: str = ""
+    nemotron_base_url: str = "http://localhost:8000"
 
     model_config = SettingsConfigDict(env_file=".env")
 

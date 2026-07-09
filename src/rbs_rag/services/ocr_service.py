@@ -21,8 +21,10 @@ class OCRService:
         mistral_api_key: str = "",
         languages: list[str] = None,
         use_gpu: bool = False,
-        primary_engine: str = "paddle",
+        primary_engine: str = "nemotron",
         dpi: int = 150,
+        nemotron_api_key: str = "",
+        nemotron_base_url: str = "http://localhost:8000",
     ):
         self.engine = OCREngine(
             mistral_api_key=mistral_api_key,
@@ -30,6 +32,8 @@ class OCRService:
             use_gpu=use_gpu,
             primary_engine=primary_engine,
             dpi=dpi,
+            nemotron_api_key=nemotron_api_key,
+            nemotron_base_url=nemotron_base_url,
         )
         self._cache = {}
 

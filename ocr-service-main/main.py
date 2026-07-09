@@ -17,6 +17,54 @@ from api.routers import health as health_router
 from api.routers import benchmark as benchmark_router
 from api.routers import advanced as advanced_router
 
+# ── OCR Engine Configuration Helpers ──────────────────────────
+
+
+def _init_nemotron(settings) -> object | None:
+    """Try to initialize Nemotron OCR engine."""
+    try:
+        from ocr.engines.nemotron_engine import NemotronOCREngine
+        nemotron = NemotronOCREngine(
+            api_key=settings.nemotron_api_key,
+            base_url=settings.nemotron_base_url,
+        )
+        if nemotron.is_available():
+            logger.info("NemotronOCREngine added as primary engine")
+            return nemotron
+        logger.info("NemotronOCREngine not available, skipping")
+    except Exception as e:
+        logger.warning("Could not initialize NemotronOCREngine: %s", e)
+    return None
+
+
+def _init_mistral(settings) -> object | None:
+    """Try to initialize Mistral OCR engine."""
+    try:
+        from ocr.engines.mistral_engine import MistralOCREngine
+        mistral = MistralOCREngine(api_key=settings.mistral_api_key)
+        if mistral.is_available():
+            logger.info("MistralOCREngine added as engine")
+            return mistral
+        logger.info("MistralOCREngine not available (no API key?), skipping")
+    except Exception as e:
+        logger.warning("Could not initialize MistralOCREngine: %s", e)
+    return None
+
+
+def _init_paddle(settings) -> object | None:
+    """Try to initialize PaddleOCR engine."""
+    try:
+        from ocr.engines.paddle_engine import PaddleOCREngine
+        langs = [lang.strip() for lang in settings.ocr_languages.split(",")]
+        paddle = PaddleOCREngine(languages=langs, use_gpu=settings.use_gpu)
+        if paddle.is_available():
+            logger.info("PaddleOCREngine added as engine")
+            return paddle
+        logger.info("PaddleOCREngine not available, skipping")
+    except Exception as e:
+        logger.warning("Could not initialize PaddleOCREngine: %s", e)
+    return None
+
 logger = get_logger(__name__)
 
 
@@ -28,30 +76,20 @@ async def lifespan(app: FastAPI):
 
     engines = []
 
-    # 1. Try Mistral (primary)
-    try:
-        from ocr.engines.mistral_engine import MistralOCREngine
-        mistral = MistralOCREngine(api_key=settings.mistral_api_key)
-        if mistral.is_available():
-            engines.append(mistral)
-            logger.info("MistralOCREngine added as primary engine")
-        else:
-            logger.info("MistralOCREngine not available (no API key?), skipping")
-    except Exception as e:
-        logger.warning("Could not initialize MistralOCREngine: %s", e)
+    # 1. Try Nemotron (primary)
+    nemotron = _init_nemotron(settings)
+    if nemotron:
+        engines.append(nemotron)
 
-    # 2. Try PaddleOCR (fallback)
-    try:
-        from ocr.engines.paddle_engine import PaddleOCREngine
-        langs = [lang.strip() for lang in settings.ocr_languages.split(",")]
-        paddle = PaddleOCREngine(languages=langs, use_gpu=settings.use_gpu)
-        if paddle.is_available():
-            engines.append(paddle)
-            logger.info("PaddleOCREngine added as fallback engine")
-        else:
-            logger.info("PaddleOCREngine not available, skipping")
-    except Exception as e:
-        logger.warning("Could not initialize PaddleOCREngine: %s", e)
+    # 2. Try Mistral (first fallback)
+    mistral = _init_mistral(settings)
+    if mistral:
+        engines.append(mistral)
+
+    # 3. Try PaddleOCR (final fallback)
+    paddle = _init_paddle(settings)
+    if paddle:
+        engines.append(paddle)
 
     from ocr.engines.orchestrator import OCROrchestrator
     app.state.orchestrator = OCROrchestrator(engines)

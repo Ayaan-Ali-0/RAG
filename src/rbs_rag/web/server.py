@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import sqlite3
 import time
@@ -13,6 +14,7 @@ import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, UploadFile, File, Header, HTTPException, BackgroundTasks, Depends, Query
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
@@ -25,6 +27,7 @@ from rbs_rag.llm import LLMSettings
 from rbs_rag.engine import RagEngine
 from rbs_rag.document_loaders import _document_id, load_document
 from rbs_rag.cloud_sync import sync_cloud_documents
+from rbs_rag.security import detect_prompt_injection, generate_jwt, verify_jwt
 from rbs_rag.web.admin_db import AdminStore
 from rbs_rag.ocr.service import get_ocr_service, init_ocr_service
 from rbs_rag.services.scraper_service import ScraperService
@@ -82,6 +85,43 @@ def _check_rate_limit(client_ip: str, rpm: int = 60):
     if len(_rate_limit_store[client_ip]) >= rpm:
         raise HTTPException(status_code=429, detail="Rate limit exceeded")
     _rate_limit_store[client_ip].append(now)
+
+
+# --- Admin Auth ---
+
+def _get_admin_jwt_secret() -> str:
+    return os.getenv("RAG_ADMIN_JWT_SECRET", "")
+
+def _get_admin_password() -> str:
+    return os.getenv("RAG_ADMIN_PASSWORD", "admin")
+
+async def require_admin(authorization: str | None = Header(None)):
+    secret = _get_admin_jwt_secret()
+    if not secret:
+        return {"role": "admin", "tenant_id": "admin"}
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
+    payload = verify_jwt(authorization[7:], secret)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    return payload
+
+
+class AdminLoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+@app.post("/api/v1/admin/login")
+async def admin_login(req: AdminLoginRequest):
+    secret = _get_admin_jwt_secret()
+    if not secret:
+        return {"status": "error", "detail": "Admin auth not configured (set RAG_ADMIN_JWT_SECRET)"}
+    admin_password = _get_admin_password()
+    if req.username != "admin" or req.password != admin_password:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    token = generate_jwt("admin", secret)
+    return {"status": "success", "token": token, "token_type": "Bearer"}
 
 
 # --- Pydantic models ---
@@ -169,6 +209,49 @@ class TerminalExecRequest(BaseModel):
 
 
 # --- Helpers ---
+
+ALLOWED_SCRAPE_SCHEMES = frozenset({"http", "https"})
+BLOCKED_SCRAPE_HOSTS = frozenset({
+    "127.0.0.1", "localhost", "0.0.0.0", "::1",
+    "169.254.169.254",  # AWS/GCP metadata
+    "metadata.google.internal",
+})
+
+
+def _validate_scrape_url(url: str) -> str:
+    parsed = urlparse(url)
+    if parsed.scheme not in ALLOWED_SCRAPE_SCHEMES:
+        raise HTTPException(status_code=400, detail=f"Invalid URL scheme: {parsed.scheme}")
+    host = parsed.hostname or ""
+    if host in BLOCKED_SCRAPE_HOSTS:
+        raise HTTPException(status_code=400, detail="URL points to internal/blocked host")
+    if host.startswith("10.") or host.startswith("192.168.") or host.startswith("172."):
+        try:
+            first_octet = int(host.split(".")[0])
+            if first_octet == 10 or first_octet == 192 or (first_octet == 172 and 16 <= int(host.split(".")[1]) <= 31):
+                raise HTTPException(status_code=400, detail="URL points to private network")
+        except (ValueError, IndexError):
+            pass
+    return url
+
+
+SAFE_EXTENSIONS = frozenset({
+    ".txt", ".md", ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+    ".csv", ".json", ".xml", ".html", ".htm", ".png", ".jpg", ".jpeg", ".gif",
+    ".bmp", ".tiff", ".tif", ".webp", ".svg", ".epub", ".rtf",
+})
+MAX_UPLOAD_SIZE = 100 * 1024 * 1024  # 100 MB
+
+
+def _validate_upload_file(filename: str, file_size: int) -> None:
+    ext = Path(filename).suffix.lower()
+    if not ext:
+        raise HTTPException(status_code=400, detail="File must have an extension")
+    if ext not in SAFE_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"File type '{ext}' not allowed")
+    if file_size > MAX_UPLOAD_SIZE:
+        raise HTTPException(status_code=413, detail=f"File too large (max {MAX_UPLOAD_SIZE // 1024 // 1024} MB)")
+
 
 def _get_scraper_service() -> ScraperService:
     global _scraper_service
@@ -396,7 +479,7 @@ async def health_check():
 
 
 @app.get("/api/v1/system/status")
-async def system_status():
+async def system_status(_admin=Depends(require_admin)):
     tenants = admin_store.list_tenants()
     total_docs = 0
     total_chunks = 0
@@ -425,7 +508,7 @@ async def system_status():
 # --- ADMIN APIs ---
 
 @app.get("/api/v1/tenants")
-def get_tenants():
+def get_tenants(_admin=Depends(require_admin)):
     tenants = admin_store.list_tenants()
     for t in tenants:
         t["llm_api_key"] = "***"
@@ -447,7 +530,7 @@ def get_tenants():
 
 
 @app.post("/api/v1/tenants")
-def onboard_tenant(req: TenantOnboardRequest):
+def onboard_tenant(req: TenantOnboardRequest, _admin=Depends(require_admin)):
     existing = admin_store.get_tenant(req.tenant_id)
     if existing:
         raise HTTPException(status_code=400, detail="Tenant ID already exists.")
@@ -463,7 +546,7 @@ def onboard_tenant(req: TenantOnboardRequest):
 
 
 @app.get("/api/v1/tenants/{tenant_id}")
-def get_tenant_details(tenant_id: str):
+def get_tenant_details(tenant_id: str, _admin=Depends(require_admin)):
     tenant = admin_store.get_tenant(tenant_id)
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
@@ -474,7 +557,7 @@ def get_tenant_details(tenant_id: str):
 
 
 @app.put("/api/v1/tenants/{tenant_id}")
-def update_tenant(tenant_id: str, req: TenantUpdateRequest):
+def update_tenant(tenant_id: str, req: TenantUpdateRequest, _admin=Depends(require_admin)):
     tenant = admin_store.get_tenant(tenant_id)
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
@@ -492,7 +575,7 @@ def update_tenant(tenant_id: str, req: TenantUpdateRequest):
 
 
 @app.delete("/api/v1/tenants/{tenant_id}")
-def delete_tenant(tenant_id: str):
+def delete_tenant(tenant_id: str, _admin=Depends(require_admin)):
     tenant = admin_store.get_tenant(tenant_id)
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
@@ -508,7 +591,7 @@ def delete_tenant(tenant_id: str):
 # --- TENANT DOCUMENTS APIs ---
 
 @app.get("/api/v1/tenants/{tenant_id}/documents")
-def list_tenant_documents(tenant_id: str):
+def list_tenant_documents(tenant_id: str, _admin=Depends(require_admin)):
     tenant = admin_store.get_tenant(tenant_id)
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
@@ -556,7 +639,7 @@ def list_tenant_documents(tenant_id: str):
 
 
 @app.get("/api/v1/tenants/{tenant_id}/documents/{filename}/chunks")
-def get_document_chunks(tenant_id: str, filename: str):
+def get_document_chunks(tenant_id: str, filename: str, _admin=Depends(require_admin)):
     tenant = admin_store.get_tenant(tenant_id)
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
@@ -576,7 +659,7 @@ def get_document_chunks(tenant_id: str, filename: str):
 
 
 @app.post("/api/v1/tenants/{tenant_id}/documents")
-async def upload_tenant_documents(tenant_id: str, files: list[UploadFile] = File(...), apply_ocr: bool = Query(default=False)):
+async def upload_tenant_documents(tenant_id: str, files: list[UploadFile] = File(...), apply_ocr: bool = Query(default=False), _admin=Depends(require_admin)):
     tenant = admin_store.get_tenant(tenant_id)
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
@@ -585,15 +668,20 @@ async def upload_tenant_documents(tenant_id: str, files: list[UploadFile] = File
     uploaded_files = []
     for file in files:
         filename = Path(file.filename).name
-        target_path = docs_dir / filename
+        _validate_upload_file(filename, 0)
+        ext = Path(filename).suffix.lower()
+        safe_name = f"{uuid.uuid4().hex}{ext}"
+        target_path = docs_dir / safe_name
+        content = file.file.read()
+        _validate_upload_file(filename, len(content))
         with target_path.open("wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-        uploaded_files.append(filename)
+            buffer.write(content)
+        uploaded_files.append({"original": filename, "saved_as": safe_name})
     return {"status": "success", "uploaded": uploaded_files}
 
 
 @app.delete("/api/v1/tenants/{tenant_id}/documents/{filename}")
-def delete_tenant_document(tenant_id: str, filename: str):
+def delete_tenant_document(tenant_id: str, filename: str, _admin=Depends(require_admin)):
     tenant = admin_store.get_tenant(tenant_id)
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
@@ -616,7 +704,7 @@ def delete_tenant_document(tenant_id: str, filename: str):
 # --- INGESTION APIs ---
 
 @app.post("/api/v1/tenants/{tenant_id}/ingest")
-def trigger_ingestion(tenant_id: str, background_tasks: BackgroundTasks, apply_ocr: bool = Query(default=False)):
+def trigger_ingestion(tenant_id: str, background_tasks: BackgroundTasks, apply_ocr: bool = Query(default=False), _admin=Depends(require_admin)):
     tenant = admin_store.get_tenant(tenant_id)
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
@@ -636,7 +724,7 @@ def trigger_ingestion(tenant_id: str, background_tasks: BackgroundTasks, apply_o
 
 
 @app.get("/api/v1/tenants/{tenant_id}/ingest/status")
-def get_ingestion_status(tenant_id: str):
+def get_ingestion_status(tenant_id: str, _admin=Depends(require_admin)):
     tenant = admin_store.get_tenant(tenant_id)
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
@@ -647,13 +735,24 @@ def get_ingestion_status(tenant_id: str):
 # --- CHAT APIs ---
 
 @app.post("/api/v1/tenants/{tenant_id}/chat")
-async def chat_playground(tenant_id: str, req: ChatRequest, x_forwarded_for: str = Header("127.0.0.1")):
+async def chat_playground(tenant_id: str, req: ChatRequest, x_forwarded_for: str = Header("127.0.0.1"), _admin=Depends(require_admin)):
     _check_rate_limit(x_forwarded_for, 60)
     tenant = admin_store.get_tenant(tenant_id)
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
     if tenant["status"] != "active":
         raise HTTPException(status_code=403, detail="Tenant account is suspended.")
+    injection_flags = detect_prompt_injection(req.query)
+    if injection_flags:
+        admin_store.log_activity(tenant_id=tenant_id, level="WARNING", operation="PROMPT_INJECTION_DETECTED",
+                                message=f"Injection patterns: {injection_flags}", details={"query": req.query})
+        return {
+            "answer": "I cannot process this request as it appears to contain prompt injection attempts.",
+            "citations": [],
+            "contexts": [],
+            "validation": {"sufficient": False, "confidence": "low", "reasons": ["Prompt injection detected"], "confidence_score": 0.0},
+            "profile": {},
+        }
     engine = _get_engine(tenant)
     try:
         ans = engine.ask(query=req.query, kb="default", session_id=req.session_id, user_id=req.user_id, filters=req.filters)
@@ -671,12 +770,20 @@ async def chat_playground(tenant_id: str, req: ChatRequest, x_forwarded_for: str
 
 
 @app.post("/api/v1/tenants/{tenant_id}/chat/stream")
-async def chat_playground_stream(tenant_id: str, req: ChatRequest):
+async def chat_playground_stream(tenant_id: str, req: ChatRequest, x_forwarded_for: str = Header("127.0.0.1"), _admin=Depends(require_admin)):
+    _check_rate_limit(x_forwarded_for, 30)
     tenant = admin_store.get_tenant(tenant_id)
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
     if tenant["status"] != "active":
         raise HTTPException(status_code=403, detail="Tenant account is suspended.")
+    injection_flags = detect_prompt_injection(req.query)
+    if injection_flags:
+        admin_store.log_activity(tenant_id=tenant_id, level="WARNING", operation="PROMPT_INJECTION_DETECTED",
+                                message=f"Injection patterns: {injection_flags}", details={"query": req.query})
+        async def rejection_stream():
+            yield f"data: {json.dumps({'text': 'Request rejected due to prompt injection.', 'done': True})}\n\n"
+        return StreamingResponse(rejection_stream(), media_type="text/event-stream")
     engine = _get_engine(tenant)
 
     async def event_stream():
@@ -692,12 +799,16 @@ async def chat_playground_stream(tenant_id: str, req: ChatRequest):
 
 
 @app.post("/api/v1/chat")
-def chat_integration(req: ChatRequest, x_api_key: str = Header(..., alias="X-API-Key")):
+def chat_integration(req: ChatRequest, x_api_key: str = Header(..., alias="X-API-Key"), x_forwarded_for: str = Header("127.0.0.1")):
+    _check_rate_limit(x_forwarded_for, 60)
     tenant = admin_store.get_tenant_by_api_key(x_api_key)
     if not tenant:
         raise HTTPException(status_code=401, detail="Invalid API Key.")
     if tenant["status"] != "active":
         raise HTTPException(status_code=403, detail="Client account is suspended.")
+    injection_flags = detect_prompt_injection(req.query)
+    if injection_flags:
+        return {"answer": "Request rejected due to prompt injection.", "citations": [], "validation": {"sufficient": False, "confidence": "low"}}
     engine = _get_engine(tenant)
     try:
         ans = engine.ask(query=req.query, kb="default", session_id=req.session_id, user_id=req.user_id, filters=req.filters)
@@ -707,12 +818,18 @@ def chat_integration(req: ChatRequest, x_api_key: str = Header(..., alias="X-API
 
 
 @app.post("/api/v1/chat/stream")
-async def chat_integration_stream(req: ChatRequest, x_api_key: str = Header(..., alias="X-API-Key")):
+async def chat_integration_stream(req: ChatRequest, x_api_key: str = Header(..., alias="X-API-Key"), x_forwarded_for: str = Header("127.0.0.1")):
+    _check_rate_limit(x_forwarded_for, 30)
     tenant = admin_store.get_tenant_by_api_key(x_api_key)
     if not tenant:
         raise HTTPException(status_code=401, detail="Invalid API Key.")
     if tenant["status"] != "active":
         raise HTTPException(status_code=403, detail="Client account is suspended.")
+    injection_flags = detect_prompt_injection(req.query)
+    if injection_flags:
+        async def reject_stream():
+            yield f"data: {json.dumps({'text': 'Request rejected due to prompt injection.', 'done': True})}\n\n"
+        return StreamingResponse(reject_stream(), media_type="text/event-stream")
     engine = _get_engine(tenant)
 
     async def event_stream():
@@ -727,8 +844,7 @@ async def chat_integration_stream(req: ChatRequest, x_api_key: str = Header(...,
 
 # --- CLOUD SYNC, SCRAPE, OCR APIs ---
 
-@app.get("/api/v1/isolation-check")
-def run_isolation_check():
+def _run_isolation_check():
     tenants = admin_store.list_tenants()
     results = []
     total_isolated = 0
@@ -763,8 +879,13 @@ def run_isolation_check():
     return {"status": "verified" if all_clean else "warning", "score_percent": score, "total_tenants": len(tenants), "verified_isolated": total_isolated, "details": results}
 
 
+@app.get("/api/v1/isolation-check")
+def run_isolation_check(_admin=Depends(require_admin)):
+    return _run_isolation_check()
+
+
 @app.post("/api/v1/tenants/{tenant_id}/cloud-sync")
-def trigger_cloud_sync(tenant_id: str, req: CloudSyncRequest, background_tasks: BackgroundTasks):
+def trigger_cloud_sync(tenant_id: str, req: CloudSyncRequest, background_tasks: BackgroundTasks, _admin=Depends(require_admin)):
     tenant = admin_store.get_tenant(tenant_id)
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
@@ -783,10 +904,11 @@ def trigger_cloud_sync(tenant_id: str, req: CloudSyncRequest, background_tasks: 
 
 
 @app.post("/api/v1/tenants/{tenant_id}/scrape")
-async def scrape_url(tenant_id: str, req: ScrapeRequest):
+async def scrape_url(tenant_id: str, req: ScrapeRequest, _admin=Depends(require_admin)):
     tenant = admin_store.get_tenant(tenant_id)
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
+    _validate_scrape_url(req.url)
     scraper = _get_scraper_service()
     try:
         if req.crawl:
@@ -815,7 +937,7 @@ async def scrape_url(tenant_id: str, req: ScrapeRequest):
 
 
 @app.get("/api/v1/tenants/{tenant_id}/scrape/jobs")
-async def list_scrape_jobs(tenant_id: str):
+async def list_scrape_jobs(tenant_id: str, _admin=Depends(require_admin)):
     tenant = admin_store.get_tenant(tenant_id)
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
@@ -824,7 +946,7 @@ async def list_scrape_jobs(tenant_id: str):
 
 
 @app.get("/api/v1/tenants/{tenant_id}/scrape/jobs/{job_id}")
-async def get_scrape_job(tenant_id: str, job_id: str):
+async def get_scrape_job(tenant_id: str, job_id: str, _admin=Depends(require_admin)):
     tenant = admin_store.get_tenant(tenant_id)
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
@@ -836,7 +958,7 @@ async def get_scrape_job(tenant_id: str, job_id: str):
 
 
 @app.post("/api/v1/tenants/{tenant_id}/ocr")
-async def ocr_document(tenant_id: str, file: UploadFile = File(...)):
+async def ocr_document(tenant_id: str, file: UploadFile = File(...), _admin=Depends(require_admin)):
     tenant = admin_store.get_tenant(tenant_id)
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
@@ -856,7 +978,7 @@ async def ocr_document(tenant_id: str, file: UploadFile = File(...)):
 
 
 @app.get("/api/v1/system/ocr-status")
-async def get_ocr_status():
+async def get_ocr_status(_admin=Depends(require_admin)):
     try:
         ocr_svc = get_ocr_service()
         engines = ocr_svc.get_available_engines()
@@ -868,7 +990,7 @@ async def get_ocr_status():
 # --- CHAT SESSION MANAGEMENT ---
 
 @app.get("/api/v1/tenants/{tenant_id}/sessions")
-def list_tenant_sessions(tenant_id: str):
+def list_tenant_sessions(tenant_id: str, _admin=Depends(require_admin)):
     tenant = admin_store.get_tenant(tenant_id)
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
@@ -880,7 +1002,7 @@ def list_tenant_sessions(tenant_id: str):
 
 
 @app.get("/api/v1/tenants/{tenant_id}/sessions/{session_id}/turns")
-def get_session_turns(tenant_id: str, session_id: str):
+def get_session_turns(tenant_id: str, session_id: str, _admin=Depends(require_admin)):
     tenant = admin_store.get_tenant(tenant_id)
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
@@ -889,7 +1011,7 @@ def get_session_turns(tenant_id: str, session_id: str):
 
 
 @app.delete("/api/v1/tenants/{tenant_id}/sessions/{session_id}")
-def delete_chat_session(tenant_id: str, session_id: str):
+def delete_chat_session(tenant_id: str, session_id: str, _admin=Depends(require_admin)):
     tenant = admin_store.get_tenant(tenant_id)
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
@@ -899,7 +1021,7 @@ def delete_chat_session(tenant_id: str, session_id: str):
 
 
 @app.post("/api/v1/tenants/{tenant_id}/sessions/purge")
-def purge_chat_sessions(tenant_id: str):
+def purge_chat_sessions(tenant_id: str, _admin=Depends(require_admin)):
     tenant = admin_store.get_tenant(tenant_id)
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
@@ -912,14 +1034,17 @@ def purge_chat_sessions(tenant_id: str):
 # --- SYSTEM LOGS ---
 
 @app.get("/api/v1/system/logs")
-def list_system_logs(tenant_id: str | None = None, level: str | None = None, limit: int = 100):
+def list_system_logs(tenant_id: str | None = None, level: str | None = None, limit: int = 100, _admin=Depends(require_admin)):
     return {"logs": admin_store.get_activity_logs(tenant_id=tenant_id, level=level, limit=limit)}
 
 
 # --- TERMINAL ---
 
 @app.post("/api/v1/terminal/exec")
-def execute_terminal_command(req: TerminalExecRequest):
+def execute_terminal_command(req: TerminalExecRequest, _admin=Depends(require_admin)):
+    terminal_enabled = os.getenv("RAG_TERMINAL_ENABLED", "true").lower() == "true"
+    if not terminal_enabled:
+        return {"output": "Terminal is disabled.", "type": "error"}
     raw_cmd = req.command.strip()
     if not raw_cmd:
         return {"output": "", "type": "empty"}
@@ -951,7 +1076,7 @@ def execute_terminal_command(req: TerminalExecRequest):
         return {"output": "\n".join(lines), "type": "help_catalog"}
 
     if cmd in {"isolation", "audit"}:
-        check = run_isolation_check()
+        check = _run_isolation_check()
         lines = [f"ISOLATION AUDIT: Status={check['status']}, Score={check['score_percent']:.1f}%, Tenants={check['total_tenants']}, Isolated={check['verified_isolated']}"]
         for item in check["details"]:
             lines.append(f"  {item['tenant_id']}: isolated={item['isolated']}, docs={item['doc_count']}, chunks={item['chunk_count']}")

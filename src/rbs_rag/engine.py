@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 from pathlib import Path
@@ -8,7 +7,7 @@ from pathlib import Path
 from .chunking import create_chunker
 from .config import AppConfig, resolve_storage_path
 from .document_loaders import iter_document_files, load_document
-from .embeddings import create_embedding_provider, create_sparse_provider
+from .embeddings import create_embedding_provider
 from .llm import build_rag_messages, create_llm_client, create_streaming_client
 from .models import Answer, Citation, IngestSummary, SearchResult, StreamingChunk
 from .retrieval import HybridRetriever
@@ -25,15 +24,15 @@ class RagEngine:
         self.root = root
         self.store = SQLiteRagStore(resolve_storage_path(root, config))
         self.vector_store = QdrantVectorStore(config.qdrant)
-        emb_api_key = getattr(config.embeddings, "api_key", None) or config.llm.api_key
-        emb_base_url = getattr(config.embeddings, "base_url", None)
+        emb_api_key = config.embeddings.api_key or config.llm.api_key
+        emb_base_url = config.embeddings.base_url
         self.embedding_provider = create_embedding_provider(
             config.embeddings.provider, config.embeddings.dimensions, config.embeddings.model,
             api_key=emb_api_key, base_url=emb_base_url,
         )
-        self.sparse_provider = create_sparse_provider(
-            config.embeddings.provider, config.embeddings.dimensions, config.embeddings.model,
-        )
+        # self.sparse_provider = create_sparse_provider(
+        #     config.embeddings.provider, config.embeddings.dimensions, config.embeddings.model,
+        # )
         self.chunker = create_chunker(config.chunking)
         self._start_time = time.time()
         self._initialized = False
@@ -45,7 +44,7 @@ class RagEngine:
         await self.vector_store.ensure_collection("rag_chunks", self.config.embeddings.dimensions)
         self._initialized = True
         log.info("RagEngine initialized (qdrant=%s, embeddings=%s, chunker=%s)",
-                 self.vector_store._initialized,
+                 self.vector_store.is_initialized,
                  self.config.embeddings.provider,
                  type(self.chunker).__name__)
 
@@ -75,11 +74,15 @@ class RagEngine:
         embeddings = self.embedding_provider.embed([chunk.text for chunk in chunks])
         for chunk, embedding in zip(chunks, embeddings):
             chunk.embedding = embedding
-        self.store.upsert_document(document, self.config.tenant_id, knowledge_base_id)
-        self.store.upsert_chunks(chunks)
+        try:
+            self.store.upsert_document(document, self.config.tenant_id, knowledge_base_id)
+            self.store.upsert_chunks(chunks)
+        except Exception as exc:
+            log.error("SQLite upsert failed: %s", exc)
+            raise
 
         # Also sync to Qdrant
-        if self.vector_store._initialized:
+        if self.vector_store.is_initialized:
             try:
                 await self.vector_store.delete_document_chunks("rag_chunks", document.document_id)
                 await self.vector_store.upsert_chunks("rag_chunks", chunks)
@@ -93,7 +96,7 @@ class RagEngine:
         if not doc:
             return
         self.store.delete_document(document_id)
-        if self.vector_store._initialized:
+        if self.vector_store.is_initialized:
             try:
                 await self.vector_store.delete_document_chunks("rag_chunks", document_id)
             except Exception as exc:
@@ -109,7 +112,6 @@ class RagEngine:
 
     def ask(self, query: str, kb: str | None = None, session_id: str = "default",
             user_id: str = "local-user", filters: dict[str, str] | None = None) -> Answer:
-        import time
         t_start = time.perf_counter()
         retriever = self._build_retriever()
         results, ret_profile = retriever.search_with_profile(query, kb or self.config.default_kb, filters=filters)
@@ -159,7 +161,6 @@ class RagEngine:
 
     async def ask_stream(self, query: str, kb: str | None = None, session_id: str = "default",
                          user_id: str = "local-user", filters: dict[str, str] | None = None):
-        import time
         t_start = time.perf_counter()
         retriever = self._build_retriever()
         results, ret_profile = retriever.search_with_profile(query, kb or self.config.default_kb, filters=filters)
@@ -210,7 +211,7 @@ class RagEngine:
 
     def get_health(self):
         from .models import HealthStatus
-        qdrant_status = "connected" if (self.vector_store._client and self.vector_store._initialized) else "disconnected"
+        qdrant_status = "connected" if (self.vector_store.client and self.vector_store.is_initialized) else "disconnected"
         llm_status = "configured" if self.config.llm.api_key else "not_configured"
         return HealthStatus(
             status="ok",
@@ -240,5 +241,5 @@ class RagEngine:
             final_context_k=self.config.retrieval.final_context_k,
             dense_weight=self.config.retrieval.dense_weight,
             sparse_weight=self.config.retrieval.sparse_weight,
-            vector_store=self.vector_store if self.vector_store._initialized else None,
+            vector_store=self.vector_store if self.vector_store.is_initialized else None,
         )

@@ -16,8 +16,10 @@ def get_ocr_service() -> OCRService:
             mistral_api_key=os.getenv("MISTRAL_API_KEY", ""),
             languages=os.getenv("OCR_LANGUAGES", "en").split(","),
             use_gpu=os.getenv("USE_GPU", "false").lower() == "true",
-            primary_engine=os.getenv("PRIMARY_OCR_ENGINE", "paddle"),
+            primary_engine=os.getenv("PRIMARY_OCR_ENGINE", "nemotron"),
             dpi=int(os.getenv("OCR_RENDER_DPI", "150")),
+            nemotron_api_key=os.getenv("NEMOTRON_API_KEY", ""),
+            nemotron_base_url=os.getenv("NEMOTRON_BASE_URL", "http://localhost:8000"),
         )
     return _ocr_service
 
@@ -26,8 +28,10 @@ def init_ocr_service(
     mistral_api_key: str = "",
     languages: list[str] = None,
     use_gpu: bool = False,
-    primary_engine: str = "paddle",
+    primary_engine: str = "nemotron",
     dpi: int = 150,
+    nemotron_api_key: str = "",
+    nemotron_base_url: str = "http://localhost:8000",
 ) -> OCRService:
     """Initialize the OCR service with custom configuration."""
     global _ocr_service
@@ -37,5 +41,7 @@ def init_ocr_service(
         use_gpu=use_gpu,
         primary_engine=primary_engine,
         dpi=dpi,
+        nemotron_api_key=nemotron_api_key,
+        nemotron_base_url=nemotron_base_url,
     )
     return _ocr_service

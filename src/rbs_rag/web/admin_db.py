@@ -2,6 +2,8 @@ import json
 import sqlite3
 from pathlib import Path
 
+from rbs_rag.security import decrypt_api_key, encrypt_api_key, hash_api_key, validate_api_key
+
 
 class AdminStore:
     def __init__(self, path: Path):
@@ -24,7 +26,8 @@ class AdminStore:
                     status TEXT NOT NULL, -- 'active', 'suspended'
                     subscription_tier TEXT NOT NULL, -- 'basic', 'premium', 'enterprise'
                     monthly_fee REAL NOT NULL,
-                    api_key TEXT UNIQUE NOT NULL,
+                    api_key TEXT,
+                    api_key_hash TEXT,
                     llm_provider TEXT NOT NULL,
                     llm_model TEXT NOT NULL,
                     llm_api_key TEXT NOT NULL,
@@ -62,6 +65,10 @@ class AdminStore:
                 pass
             try:
                 conn.execute("ALTER TABLE tenants ADD COLUMN chat_retention_days INTEGER DEFAULT 30")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                conn.execute("ALTER TABLE tenants ADD COLUMN api_key_hash TEXT")
             except sqlite3.OperationalError:
                 pass
 
@@ -132,27 +139,41 @@ class AdminStore:
             return [dict(r) for r in rows]
             conn.commit()
 
+    def _decrypt_tenant(self, row: dict) -> dict:
+        d = dict(row)
+        if d.get("llm_api_key"):
+            d["llm_api_key"] = decrypt_api_key(d["llm_api_key"])
+        if d.get("embedding_api_key"):
+            d["embedding_api_key"] = decrypt_api_key(d["embedding_api_key"])
+        return d
+
     def list_tenants(self) -> list[dict]:
         with self._connect() as conn:
             rows = conn.execute("SELECT * FROM tenants ORDER BY created_at DESC").fetchall()
-            return [dict(row) for row in rows]
+            return [self._decrypt_tenant(dict(row)) for row in rows]
 
     def get_tenant(self, tenant_id: str) -> dict | None:
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM tenants WHERE tenant_id = ?", (tenant_id,)).fetchone()
-            return dict(row) if row else None
+            return self._decrypt_tenant(dict(row)) if row else None
 
     def get_tenant_by_api_key(self, api_key: str) -> dict | None:
+        key_hash = hash_api_key(api_key)
         with self._connect() as conn:
-            row = conn.execute("SELECT * FROM tenants WHERE api_key = ?", (api_key,)).fetchone()
-            return dict(row) if row else None
+            row = conn.execute("SELECT * FROM tenants WHERE api_key_hash = ?", (key_hash,)).fetchone()
+            return self._decrypt_tenant(dict(row)) if row else None
 
     def upsert_tenant(self, data: dict) -> None:
+        api_key_val = data.get("api_key", "")
+        api_key_hash = hash_api_key(api_key_val) if api_key_val else None
+        llm_api_key_enc = encrypt_api_key(data["llm_api_key"])
+        embedding_api_key_enc = encrypt_api_key(data.get("embedding_api_key", ""))
+
         with self._connect() as conn:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO tenants (
-                    tenant_id, name, status, subscription_tier, monthly_fee, api_key,
+                    tenant_id, name, status, subscription_tier, monthly_fee, api_key, api_key_hash,
                     llm_provider, llm_model, llm_api_key, llm_base_url,
                     embedding_provider, embedding_model, embedding_dimensions,
                     embedding_base_url, embedding_api_key,
@@ -160,7 +181,7 @@ class AdminStore:
                     retrieval_dense_weight, retrieval_sparse_weight,
                     chunking_max_tokens, chunking_overlap_tokens,
                     session_memory_limit, chat_retention_days
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     data["tenant_id"],
@@ -168,16 +189,17 @@ class AdminStore:
                     data["status"],
                     data["subscription_tier"],
                     data["monthly_fee"],
-                    data["api_key"],
+                    api_key_val or None,
+                    api_key_hash,
                     data["llm_provider"],
                     data["llm_model"],
-                    data["llm_api_key"],
+                    llm_api_key_enc,
                     data.get("llm_base_url"),
                     data["embedding_provider"],
                     data["embedding_model"],
                     data["embedding_dimensions"],
                     data.get("embedding_base_url"),
-                    data.get("embedding_api_key"),
+                    embedding_api_key_enc,
                     data["retrieval_top_k"],
                     data["retrieval_rerank_top_k"],
                     data["retrieval_final_context_k"],

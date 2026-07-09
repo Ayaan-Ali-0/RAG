@@ -5,6 +5,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import AsyncGenerator, Protocol
 
+import httpx
+
 from .models import StreamingChunk
 
 log = logging.getLogger(__name__)
@@ -98,7 +100,7 @@ class OpenAICompatibleClient:
         url = f"{base_url}/chat/completions"
         for model in _unique_models(self.settings.model, self.settings.fallback_models):
             try:
-                async with _get_httpx_client() as client:
+                async with _get_async_client() as client:
                     async with client.stream(
                         "POST",
                         url,
@@ -167,7 +169,7 @@ class GeminiClient:
         for model in _unique_models(self.settings.model, self.settings.fallback_models):
             try:
                 url = f"{base_url}/models/{model}:streamGenerateContent?alt=sse&key={self.settings.api_key}"
-                async with _get_httpx_client() as client:
+                async with _get_async_client() as client:
                     async with client.stream(
                         "POST",
                         url,
@@ -259,16 +261,24 @@ def create_streaming_client(settings: LLMSettings) -> StreamingLLMClient:
     raise ValueError(f"Streaming not supported for provider '{provider}'.")
 
 
+_shared_client: httpx.Client | None = None
+
+
+def _get_client() -> httpx.Client:
+    global _shared_client
+    if _shared_client is None:
+        _shared_client = httpx.Client(timeout=httpx.Timeout(120.0, connect=30.0))
+    return _shared_client
+
+
 def _post_json(url: str, payload: dict, headers: dict[str, str], timeout: int) -> dict:
-    import urllib.request
-    import urllib.error
-    request = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
+    client = _get_client()
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"LLM API request failed with HTTP {exc.code}: {body}") from exc
+        resp = client.post(url, json=payload, headers=headers, timeout=timeout)
+        resp.raise_for_status()
+        return resp.json()
+    except httpx.HTTPStatusError as exc:
+        raise RuntimeError(f"LLM API request failed with HTTP {exc.response.status_code}: {exc.response.text}") from exc
 
 
 def _unique_models(primary: str, fallbacks: list[str]) -> list[str]:
@@ -290,6 +300,5 @@ def _is_retryable_error(message: str) -> bool:
     return any(marker in message for marker in markers)
 
 
-def _get_httpx_client():
-    import httpx
+async def _get_async_client() -> httpx.AsyncClient:
     return httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=30.0), limits=httpx.Limits(max_keepalive_connections=5, max_connections=10))

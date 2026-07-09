@@ -2,46 +2,22 @@
 
 > **Enterprise-Grade Multi-Tenant RAG Platform with Integrated OCR & Web Scraping**
 
-A production-ready Retrieval-Augmented Generation platform built for enterprise deployments. Features multi-tenant isolation, hierarchical chunking, hybrid search, and integrates with best-in-class OCR and web scraping microservices.
+A production-ready Retrieval-Augmented Generation platform built for enterprise deployments. Features multi-tenant isolation, hierarchical chunking, hybrid search (Qdrant ANN + BM25 with RRF fusion), and integrates with NVIDIA Nemotron OCR v2, PaddleOCR, and web scraping microservices. No API keys required at startup — each tenant provides their own LLM key.
 
 ---
 
-## 🏗️ System Architecture
+## 📚 Documentation
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                        TENBIT RAG PLATFORM                                   │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐             │
-│  │   RAG Core      │  │   OCR Service   │  │  Scraper Service│             │
-│  │   (Port 8100)   │  │   (Port 8001)   │  │  (Port 8002)    │             │
-│  │                 │  │                 │  │                 │             │
-│  │ • Multi-tenant  │  │ • Mistral OCR   │  │ • Recursive     │             │
-│  │   RAG Engine    │  │ • PaddleOCR     │  │   Crawl         │             │
-│  │ • Hybrid Search │  │ • Hybrid PDF    │  │ • Facebook      │             │
-│  │ • Session/User  │  │ • Batch API     │  │   Scraper       │             │
-│  │   Memory        │  │ • Tables/MD     │  │ • Media Proxy   │             │
-│  │ • SSE Streaming │  │ • Entities      │  │ • Profile       │             │
-│  │ • Admin Dashboard│  │ • Rate Limited │  │   Scraper       │             │
-│  └────────┬────────┘  └────────┬────────┘  └────────┬────────┘             │
-│           │                    │                    │                      │
-│           └────────────────────┼────────────────────┘                      │
-│                                │                                          │
-│                    ┌───────────▼───────────┐                              │
-│                    │   React Dashboard     │                              │
-│                    │   (Single Page App)   │                              │
-│                    └───────────┬───────────┘                              │
-│                                │                                          │
-│                    ┌───────────▼───────────┐                              │
-│                    │   Data Layer          │                              │
-│                    │   • SQLite (Admin +   │                              │
-│                    │     Per-Tenant DB)    │                              │
-│                    │   • Qdrant (Vector)   │                              │
-│                    │   • Redis (Cache)     │                              │
-│                    └───────────────────────┘                              │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
+| Document | Location | Description |
+|----------|----------|-------------|
+| Quick Start | [docs/SETUP.md](docs/SETUP.md) | One-command new machine setup |
+| Run Guide | [docs/RUN_GUIDE.md](docs/RUN_GUIDE.md) | Running the platform (Windows/macOS/Linux) |
+| Features | [docs/FEATURES.md](docs/FEATURES.md) | Full feature catalog |
+| Architecture | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Hybrid RAG, security, OCR pipeline |
+| Improvement Plan | [docs/IMPROVEMENTS_ANALYSIS.md](docs/IMPROVEMENTS_ANALYSIS.md) | Scoring, gaps, re-scoring |
+| Deployment Guides | [docs/deployment/](docs/deployment/) | Docker, VPS, Kubernetes, Windows Server |
+| OCR Service | [ocr-service-main/](ocr-service-main/) | Standalone OCR microservice docs |
+| Scraper Service | [scraper-service-main/](scraper-service-main/) | Standalone scraper microservice docs |
 
 ---
 
@@ -59,8 +35,8 @@ A production-ready Retrieval-Augmented Generation platform built for enterprise 
 git clone <repo-url> /projects/TenBit/RAG
 cd /projects/TenBit/RAG
 
-# Edit .env — set your LLM API key (Gemini, OpenAI, or Anthropic)
-#   RAG_LLM_API_KEY=your-api-key-here
+# No API keys required at setup. Copy the template:
+cp .env.example .env
 ```
 
 ### 2. Launch Everything
@@ -85,19 +61,27 @@ curl http://localhost/api/v1/health
 | **API (via Nginx)** | http://localhost/api/v1/chat |
 | **Qdrant Dashboard** | http://localhost:6333/dashboard |
 
-### 4. Create Your First Tenant
+### 4. Create Your First Tenant (with API Key)
 
 ```bash
 curl -X POST http://localhost/api/v1/tenants \
   -H "Content-Type: application/json" \
-  -d '{"tenant_id":"demo","name":"Demo Client","llm_api_key":"'$RAG_LLM_API_KEY'"}'
+  -d '{"tenant_id":"demo","name":"Demo Client","llm_api_key":"your-gemini-or-openai-key"}'
 ```
+
+Each tenant gets their own LLM API key. The system comes up with zero API keys and you add them per-client.
 
 ### 5. (Optional) Start OCR / Scraper Microservices
 
 ```bash
 docker compose --profile all up -d
 ```
+
+OCR uses PaddleOCR locally (no API key needed). Scraper uses Playwright locally (no API key needed).
+
+**How OCR works:** The OCR service runs PaddleOCR as a local model (downloaded on first use, ~15MB). If `MISTRAL_API_KEY` is set, it uses Mistral's cloud OCR as the primary engine and falls back to PaddleOCR if Mistral is unavailable.
+
+**How Scraper works:** The scraper uses httpx + BeautifulSoup4 for HTML parsing and Playwright for JavaScript-rendered pages. All processing is local. The optional `DEEPCRAWL_API_KEY` is only for bypassing Cloudflare protection on certain websites.
 
 ---
 
@@ -358,8 +342,9 @@ document.body.appendChild(iframe);
 All config lives in a single `.env` file at the project root. Key variables:
 
 ```env
-# Required — set your LLM provider key
-RAG_LLM_API_KEY=your-gemini-or-openai-api-key
+# Optional — set only if you want a global LLM fallback.
+# Each tenant can provide their own LLM API key at creation time.
+RAG_LLM_API_KEY=
 
 # Optional — defaults are suitable for most deployments
 RAG_LLM_PROVIDER=gemini
@@ -376,19 +361,21 @@ RAG_LOG_LEVEL=INFO
 
 | Component | Current | Target | Status |
 |-----------|---------|--------|--------|
-| Vector DB | SQLite (O(n)) | Qdrant (HNSW) | 🔴 Migration needed |
+| Vector DB | Qdrant (HNSW ANN) | BGE-M3 dense+sparse | 🟢 Live |
 | Embeddings | sentence-transformers (BGE) | BGE-M3 | 🟡 Local models available |
-| Reranker | Heuristic | BGE Cross-Encoder | 🟡 Partial (sentence-transformers installed) |
+| Reranker | Heuristic | BGE Cross-Encoder | 🟡 Partial |
 | Chunking | Hierarchical | Hierarchical + Semantic | 🟡 Partial |
-| Streaming | Sync + SSE | SSE | 🟢 Implemented |
-| OCR | Fallback integration | Auto-fallback | 🟢 Integrated |
+| Streaming | SSE via async generators | SSE streaming | 🟢 Implemented |
+| OCR | Nemotron → Mistral → Paddle | Auto-fallback chain | 🟢 Integrated |
 | Scraping | URL ingestion + crawl | Recursive crawl | 🟢 Integrated |
-| Auth | API Key only | JWT + OAuth | 🟡 Basic |
+| Auth | JWT admin + X-API-Key tenant | JWT + OAuth | 🟢 Implemented |
+| API Key Storage | Fernet encrypted (AES-256-GCM) | At-rest encryption | 🟢 Implemented |
+| Prompt Injection | Pattern-based detection | ML-based detection | 🟡 Basic |
 | Observability | Basic logging | Prometheus + Tracing | 🔴 Minimal |
 | Duplicate Detection | SQLite document_id check | Full dedup pipeline | 🟢 Implemented |
 | Document UI | 3-panel tabs (Upload/Ingested/Scraped) | Refined UX | 🟢 Implemented |
 
-See **[IMPROVEMENTS_ANALYSIS.md](IMPROVEMENTS_ANALYSIS.md)** for detailed 7-phase, 156-hour implementation plan.
+See **[docs/IMPROVEMENTS_ANALYSIS.md](docs/IMPROVEMENTS_ANALYSIS.md)** for detailed analysis and re-scoring.
 
 ---
 
@@ -411,8 +398,8 @@ MIT License - see LICENSE file for details.
 ## 🆘 Support
 
 - **Issues**: GitHub Issues
-- **API Docs**: `/docs` endpoint when running (http://localhost/api/v1/docs)
-- **Architecture Spec**: `rag.docx`
+- **API Docs**: `/docs` endpoint when running (http://localhost:8000/docs)
+- **Architecture Docs**: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/deployment/](docs/deployment/)
 
 ---
 

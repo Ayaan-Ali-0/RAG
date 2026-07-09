@@ -30,16 +30,11 @@ cd C:\RAG
 
 ```powershell
 Copy-Item .env.example .env
-notepad .env
 ```
 
-Set your LLM API key in `.env`:
+No API keys are needed to start the platform. The `.env.example` already has safe defaults.
 
-```
-RAG_LLM_API_KEY=your-gemini-or-openai-key-here
-```
-
-That's the **only** config you need.
+LLM API keys are configured **per client (tenant)** when you create them via the admin dashboard or API. This lets you start the system with zero API keys and add them later for each individual client.
 
 ---
 
@@ -63,13 +58,15 @@ Expected: `{"status":"ok","db":"connected","qdrant":"connected","llm":"unknown",
 
 ---
 
-### 6. Create a client
+### 6. Create a client (with their LLM API key)
 
 ```powershell
-curl -X POST http://localhost/api/v1/tenants -H "Content-Type: application/json" -d "{\"tenant_id\":\"demo\",\"name\":\"Demo Client\",\"llm_api_key\":\"your-actual-api-key\"}"
+curl -X POST http://localhost/api/v1/tenants -H "Content-Type: application/json" -d "{\"tenant_id\":\"demo\",\"name\":\"Demo Client\",\"llm_api_key\":\"their-gemini-or-openai-key\"}"
 ```
 
-Save the returned **API key** — you'll give it to your client.
+Each client brings their own LLM API key. Save the returned **API key** (`rbs_rag_sk_...`) — you'll give it to your client for API access.
+
+OCR (PaddleOCR) and Scraper (Playwright) services run fully locally. No API keys needed for those services unless you want Mistral OCR or DeepCrawl Cloudflare bypass.
 
 ---
 

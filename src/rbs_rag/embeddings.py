@@ -3,10 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import urllib.error
-import urllib.request
 from dataclasses import dataclass
 from typing import Protocol
+
+import httpx
 
 from .text import l2_normalize, tokenize
 
@@ -101,15 +101,15 @@ class OpenAIEmbeddingProvider:
         url = "https://api.openai.com/v1/embeddings"
         payload = {"input": texts, "model": self.model}
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
-        req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
         try:
-            with urllib.request.urlopen(req, timeout=45) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
+            with httpx.Client(timeout=45) as client:
+                resp = client.post(url, json=payload, headers=headers)
+                resp.raise_for_status()
+                data = resp.json()
                 sorted_data = sorted(data["data"], key=lambda x: x["index"])
                 return [item["embedding"] for item in sorted_data]
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"OpenAI embedding request failed: {body}") from exc
+        except httpx.HTTPStatusError as exc:
+            raise RuntimeError(f"OpenAI embedding request failed: {exc.response.text}") from exc
 
 
 class OpenAICompatibleEmbeddingProvider:
@@ -125,15 +125,15 @@ class OpenAICompatibleEmbeddingProvider:
         url = f"{self.base_url}/embeddings"
         payload = {"input": texts, "model": self.model}
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
-        req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
         try:
-            with urllib.request.urlopen(req, timeout=45) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
+            with httpx.Client(timeout=45) as client:
+                resp = client.post(url, json=payload, headers=headers)
+                resp.raise_for_status()
+                data = resp.json()
                 sorted_data = sorted(data["data"], key=lambda x: x["index"])
                 return [item["embedding"] for item in sorted_data]
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"OpenAI-compatible embedding request failed: {body}") from exc
+        except httpx.HTTPStatusError as exc:
+            raise RuntimeError(f"OpenAI-compatible embedding request failed: {exc.response.text}") from exc
 
 
 class GeminiEmbeddingProvider:
@@ -148,14 +148,14 @@ class GeminiEmbeddingProvider:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:batchEmbedContents?key={self.api_key}"
         payload = {"requests": [{"model": f"models/{self.model}", "content": {"parts": [{"text": text}]}} for text in texts]}
         headers = {"Content-Type": "application/json"}
-        req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
         try:
-            with urllib.request.urlopen(req, timeout=45) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
+            with httpx.Client(timeout=45) as client:
+                resp = client.post(url, json=payload, headers=headers)
+                resp.raise_for_status()
+                data = resp.json()
                 return [item["values"] for item in data["embeddings"]]
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"Gemini embedding request failed: {body}") from exc
+        except httpx.HTTPStatusError as exc:
+            raise RuntimeError(f"Gemini embedding request failed: {exc.response.text}") from exc
 
 
 def create_embedding_provider(

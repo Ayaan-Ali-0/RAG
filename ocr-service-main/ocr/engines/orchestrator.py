@@ -13,10 +13,12 @@ logger = logging.getLogger(__name__)
 class OCROrchestrator:
     """Manages multiple OCR engines and provides automatic fallback.
 
+    Priority order: Nemotron -> Mistral -> Paddle
+
     Usage:
-        orchestrator = OCROrchestrator([mistral_engine, paddle_engine])
+        orchestrator = OCROrchestrator([nemotron_engine, mistral_engine, paddle_engine])
         result = orchestrator.process_image(data, "file.png")
-        # Tries mistral first; if it fails, falls back to paddle.
+        # Tries nemotron first; if it fails, falls back to mistral, then paddle.
     """
 
     def __init__(self, engines: List[BaseOCREngine]) -> None:

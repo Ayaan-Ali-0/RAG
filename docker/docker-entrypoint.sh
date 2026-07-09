@@ -52,6 +52,10 @@ LOG_LEVEL="${RAG_LOG_LEVEL:-INFO}"
 STRUCTURED_LOGGING="${RAG_STRUCTURED_LOGGING:-true}"
 ADMIN_AUTH_ENABLED="${RAG_ADMIN_AUTH_ENABLED:-false}"
 CORS_ORIGINS="${RAG_CORS_ORIGINS:-[\"*\"]}"
+ADMIN_JWT_SECRET="${RAG_ADMIN_JWT_SECRET:-}"
+ADMIN_PASSWORD="${RAG_ADMIN_PASSWORD:-admin}"
+TERMINAL_ENABLED="${RAG_TERMINAL_ENABLED:-true}"
+ENCRYPTION_KEY="${RAG_ENCRYPTION_KEY:-}"
 
 cat > "$CONFIG_FILE" << CONFIGEOF
 {
@@ -87,7 +91,7 @@ cat > "$CONFIG_FILE" << CONFIGEOF
   },
   "llm": {
     "provider": "$LLM_PROVIDER",
-    "api_key": "$LLM_API_KEY",
+    "api_key": "${LLM_API_KEY:-}",
     "model": "$LLM_MODEL",
     "base_url": "$LLM_BASE_URL",
     "fallback_models": []
@@ -116,12 +120,12 @@ cat > "$CONFIG_FILE" << CONFIGEOF
     "burst_size": 10
   },
   "security": {
-    "encrypt_keys": false,
+    "encrypt_keys": true,
     "admin_auth_enabled": $ADMIN_AUTH_ENABLED,
-    "admin_jwt_secret": "",
+    "admin_jwt_secret": "$ADMIN_JWT_SECRET",
     "cors_origins": $CORS_ORIGINS,
-    "prompt_injection_detection": false,
-    "terminal_enabled": true
+    "prompt_injection_detection": true,
+    "terminal_enabled": $TERMINAL_ENABLED
   },
   "observability": {
     "health_endpoint": true,
@@ -136,14 +140,18 @@ CONFIGEOF
 echo "[entrypoint] Config generated: $CONFIG_FILE"
 
 # ---------------------------------------------------------------
-# 4. Check LLM API key
+# 4. Warn about LLM API key (optional — each tenant provides their own)
 # ---------------------------------------------------------------
-if [ -z "$LLM_API_KEY" ] || [ "$LLM_API_KEY" = "your-gemini-or-openai-api-key" ]; then
+if [ -n "$LLM_API_KEY" ] && [ "$LLM_API_KEY" != "your-gemini-or-openai-api-key" ]; then
+    echo "[entrypoint] Global LLM API key configured ($LLM_PROVIDER / $LLM_MODEL)"
+else
     echo ""
     echo "=============================================================="
-    echo "  WARNING: No RAG_LLM_API_KEY set."
-    echo "  The dashboard will load but LLM queries will fail."
-    echo "  Set it in .env or docker-compose environment section."
+    echo "  INFO: No global RAG_LLM_API_KEY set."
+    echo "  The platform starts with zero API keys."
+    echo "  Each tenant will provide their own LLM API key when"
+    echo "  created via the admin dashboard or API."
+    echo "  This is the expected configuration for multi-tenant setups."
     echo "=============================================================="
     echo ""
 fi
@@ -162,6 +170,9 @@ echo "   Config:    $CONFIG_FILE"
 echo "   LLM:       $LLM_PROVIDER / $LLM_MODEL"
 echo "   Qdrant:    ${QDRANT_HOST}:${QDRANT_PORT}"
 echo "   Redis:     ${REDIS_HOST}:${REDIS_PORT}"
+echo "   Encryption: ${ENCRYPTION_KEY:+enabled}${ENCRYPTION_KEY:-disabled}"
+echo "   Admin Auth: ${ADMIN_JWT_SECRET:+enabled}${ADMIN_JWT_SECRET:-disabled}"
+echo "   Terminal:  ${TERMINAL_ENABLED}"
 echo "=============================================================="
 echo ""
 
