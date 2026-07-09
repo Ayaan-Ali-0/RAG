@@ -23,6 +23,7 @@ class HybridRetriever:
     final_context_k: int = 5
     dense_weight: float = 0.55
     sparse_weight: float = 0.45
+    reranker_type: str = "bge_cross_encoder"
     vector_store: QdrantVectorStore | None = None
     collection: str = "rag_chunks"
 
@@ -100,7 +101,7 @@ class HybridRetriever:
 
         candidates = sorted(results, key=lambda item: item.score, reverse=True)[:self.top_k]
 
-        reranker = create_reranker("local")
+        reranker = create_reranker(self.reranker_type)
         final_results = reranker.rerank(query, candidates[:self.rerank_top_k], self.final_context_k)
         t_rerank_ms = (time.perf_counter() - t_rerank0) * 1000.0
 

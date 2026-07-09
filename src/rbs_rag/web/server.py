@@ -28,6 +28,7 @@ from rbs_rag.engine import RagEngine
 from rbs_rag.document_loaders import _document_id, load_document
 from rbs_rag.cloud_sync import sync_cloud_documents
 from rbs_rag.security import detect_prompt_injection, generate_jwt, verify_jwt
+from rbs_rag.metrics import MetricsMiddleware, metrics_export, DOCUMENTS_INGESTED, CHUNKS_CREATED, CHUNKS_RETRIEVED, LLM_REQUESTS, LLM_DURATION, PROMPT_INJECTIONS_BLOCKED, ACTIVE_TENANTS, ENGINE_UPTIME
 from rbs_rag.web.admin_db import AdminStore
 from rbs_rag.ocr.service import get_ocr_service, init_ocr_service
 from rbs_rag.services.scraper_service import ScraperService
@@ -67,6 +68,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.add_middleware(MetricsMiddleware)
 
 static_dir = Path(__file__).parent / "static"
 static_dir.mkdir(parents=True, exist_ok=True)
@@ -280,7 +283,7 @@ def _get_tenant_config(tenant: dict) -> AppConfig:
         ),
         chunking=ChunkingConfig(
             max_tokens=tenant["chunking_max_tokens"], overlap_tokens=tenant["chunking_overlap_tokens"],
-            semantic_chunking=tenant.get("chunking_semantic", False),
+            semantic_chunking=tenant.get("chunking_semantic", True),
             semantic_similarity_threshold=tenant.get("chunking_semantic_threshold", 0.75),
         ),
         llm=LLMSettings(
@@ -416,6 +419,8 @@ def _run_ingestion_background(tenant_id: str, tenant_data: dict, apply_ocr: bool
                 _log_to_ingestion(tenant_id, f"  [Error] {err_msg}", progress_pct)
                 _log_to_ingestion(tenant_id, f"  [Traceback]\n{tb}", progress_pct)
 
+        DOCUMENTS_INGESTED.labels(tenant_id=tenant_id).inc(total_docs)
+        CHUNKS_CREATED.labels(tenant_id=tenant_id).inc(total_chunks)
         _log_to_ingestion(tenant_id, "Finalizing...", 95)
         status_str = "completed" if not errors else "error"
         _log_to_ingestion(tenant_id, f"Ingestion finished! New: {total_docs} docs, {total_chunks} chunks. Skipped: {skipped_docs}. Errors: {len(errors)}", 100)
@@ -478,6 +483,11 @@ async def health_check():
     ))
 
 
+@app.get("/metrics")
+async def metrics():
+    return metrics_export()
+
+
 @app.get("/api/v1/system/status")
 async def system_status(_admin=Depends(require_admin)):
     tenants = admin_store.list_tenants()
@@ -496,6 +506,8 @@ async def system_status(_admin=Depends(require_admin)):
                         total_chunks += row[0]
             except Exception:
                 pass
+    ACTIVE_TENANTS.set(len(tenants))
+    ENGINE_UPTIME.set(round(time.time() - _server_start_time, 2))
     return {
         "uptime_seconds": round(time.time() - _server_start_time, 2),
         "tenants": len(tenants),
@@ -744,6 +756,7 @@ async def chat_playground(tenant_id: str, req: ChatRequest, x_forwarded_for: str
         raise HTTPException(status_code=403, detail="Tenant account is suspended.")
     injection_flags = detect_prompt_injection(req.query)
     if injection_flags:
+        PROMPT_INJECTIONS_BLOCKED.inc()
         admin_store.log_activity(tenant_id=tenant_id, level="WARNING", operation="PROMPT_INJECTION_DETECTED",
                                 message=f"Injection patterns: {injection_flags}", details={"query": req.query})
         return {
@@ -756,6 +769,8 @@ async def chat_playground(tenant_id: str, req: ChatRequest, x_forwarded_for: str
     engine = _get_engine(tenant)
     try:
         ans = engine.ask(query=req.query, kb="default", session_id=req.session_id, user_id=req.user_id, filters=req.filters)
+        if ans.contexts:
+            CHUNKS_RETRIEVED.observe(len(ans.contexts))
         return {
             "answer": ans.text,
             "citations": [{"index": c.index, "document_name": c.document_name, "section": c.section, "chunk_id": c.chunk_id} for c in ans.citations],
@@ -808,10 +823,13 @@ def chat_integration(req: ChatRequest, x_api_key: str = Header(..., alias="X-API
         raise HTTPException(status_code=403, detail="Client account is suspended.")
     injection_flags = detect_prompt_injection(req.query)
     if injection_flags:
+        PROMPT_INJECTIONS_BLOCKED.inc()
         return {"answer": "Request rejected due to prompt injection.", "citations": [], "validation": {"sufficient": False, "confidence": "low"}}
     engine = _get_engine(tenant)
     try:
         ans = engine.ask(query=req.query, kb="default", session_id=req.session_id, user_id=req.user_id, filters=req.filters)
+        if ans.contexts:
+            CHUNKS_RETRIEVED.observe(len(ans.contexts))
         return {"answer": ans.text, "citations": [{"index": c.index, "document_name": c.document_name, "section": c.section, "chunk_id": c.chunk_id} for c in ans.citations], "validation": {"sufficient": ans.validation.sufficient, "confidence": ans.validation.confidence}}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

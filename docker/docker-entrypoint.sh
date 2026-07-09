@@ -81,12 +81,12 @@ cat > "$CONFIG_FILE" << CONFIGEOF
     "final_context_k": 5,
     "dense_weight": 0.55,
     "sparse_weight": 0.45,
-    "reranker": "local"
+    "reranker": "bge_cross_encoder"
   },
   "chunking": {
     "max_tokens": 320,
     "overlap_tokens": 48,
-    "semantic_chunking": false,
+    "semantic_chunking": true,
     "semantic_similarity_threshold": 0.75
   },
   "llm": {

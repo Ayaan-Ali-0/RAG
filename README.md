@@ -363,15 +363,15 @@ RAG_LOG_LEVEL=INFO
 |-----------|---------|--------|--------|
 | Vector DB | Qdrant (HNSW ANN) | BGE-M3 dense+sparse | 🟢 Live |
 | Embeddings | sentence-transformers (BGE) | BGE-M3 | 🟡 Local models available |
-| Reranker | Heuristic | BGE Cross-Encoder | 🟡 Partial |
-| Chunking | Hierarchical | Hierarchical + Semantic | 🟡 Partial |
+| Reranker | Heuristic | BGE Cross-Encoder | 🟢 Implemented |
+| Chunking | Hierarchical | Hierarchical + Semantic | 🟢 Implemented |
 | Streaming | SSE via async generators | SSE streaming | 🟢 Implemented |
 | OCR | Nemotron → Mistral → Paddle | Auto-fallback chain | 🟢 Integrated |
 | Scraping | URL ingestion + crawl | Recursive crawl | 🟢 Integrated |
 | Auth | JWT admin + X-API-Key tenant | JWT + OAuth | 🟢 Implemented |
 | API Key Storage | Fernet encrypted (AES-256-GCM) | At-rest encryption | 🟢 Implemented |
-| Prompt Injection | Pattern-based detection | ML-based detection | 🟡 Basic |
-| Observability | Basic logging | Prometheus + Tracing | 🔴 Minimal |
+| Prompt Injection | Pattern-based detection | ML-based detection | 🟢 Hybrid (ML + Regex) |
+| Observability | Basic logging | Prometheus + Tracing | 🟢 Implemented |
 | Duplicate Detection | SQLite document_id check | Full dedup pipeline | 🟢 Implemented |
 | Document UI | 3-panel tabs (Upload/Ingested/Scraped) | Refined UX | 🟢 Implemented |
 

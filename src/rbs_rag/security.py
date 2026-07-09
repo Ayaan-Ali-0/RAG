@@ -18,6 +18,70 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 log = logging.getLogger(__name__)
 
+_ml_detector = None
+_ml_detector_lock = threading.Lock()
+
+
+class _MLInjectionDetector:
+    def __init__(self, model_name: str = "protectai/deberta-v3-base-prompt-injection-v2"):
+        self.model_name = model_name
+        self._pipeline = None
+
+    def _lazy_init(self):
+        if self._pipeline is not None:
+            return
+        try:
+            from transformers import pipeline
+            self._pipeline = pipeline(
+                "text-classification",
+                model=self.model_name,
+                tokenizer=self.model_name,
+                max_length=512,
+                truncation=True,
+                device=-1,
+            )
+            log.info("Loaded ML prompt injection detector: %s", self.model_name)
+        except ImportError:
+            log.warning("transformers not installed, ML prompt injection detector unavailable")
+            self._pipeline = False
+        except Exception as exc:
+            log.warning("Failed to load ML detector (%s), falling back to regex", exc)
+            self._pipeline = False
+
+    def detect(self, text: str) -> list[str]:
+        self._lazy_init()
+        if not self._pipeline:
+            return []
+        try:
+            result = self._pipeline(text[:512])[0]
+            label = result.get("label", "SAFE")
+            score = result.get("score", 0.0)
+            is_injection = "injection" in label.lower() or "jailbreak" in label.lower()
+            is_unsafe = label.upper() == "UNSAFE" or label.upper() == "NEGATIVE"
+            if (is_injection or is_unsafe) and score > 0.5:
+                return [f"ml_detection:{label}:{score:.3f}"]
+        except Exception as exc:
+            log.warning("ML detector inference failed: %s", exc)
+        return []
+
+
+def get_ml_detector() -> _MLInjectionDetector | None:
+    global _ml_detector
+    if _ml_detector is not None:
+        return _ml_detector
+    with _ml_detector_lock:
+        if _ml_detector is not None:
+            return _ml_detector
+        try:
+            _ml_detector = _MLInjectionDetector()
+            _ml_detector._lazy_init()
+            if _ml_detector._pipeline:
+                return _ml_detector
+        except Exception as exc:
+            log.debug("ML detector unavailable: %s", exc)
+        _ml_detector = None
+        return None
+
 _fernet: Fernet | None = None
 _fernet_lock = threading.Lock()
 
@@ -84,12 +148,24 @@ INJECTION_PATTERNS = [
 ]
 
 
-def detect_prompt_injection(text: str) -> list[str]:
-    detected = []
+def detect_prompt_injection(text: str, use_ml: bool = True) -> list[str]:
+    detected: list[str] = []
+
+    if use_ml:
+        try:
+            detector = get_ml_detector()
+            if detector:
+                ml_flags = detector.detect(text)
+                if ml_flags:
+                    return ml_flags
+        except Exception as exc:
+            log.debug("ML detection error: %s", exc)
+
     for pattern in INJECTION_PATTERNS:
         match = pattern.search(text)
         if match:
             detected.append(match.group())
+
     return detected
 
 

@@ -35,14 +35,14 @@ class RetrievalConfig:
     final_context_k: int = 5
     dense_weight: float = 0.55
     sparse_weight: float = 0.45
-    reranker: str = "local"   # local | bge_cross_encoder
+    reranker: str = "bge_cross_encoder"   # local | bge_cross_encoder
 
 
 @dataclass(slots=True)
 class ChunkingConfig:
     max_tokens: int = 320
     overlap_tokens: int = 48
-    semantic_chunking: bool = False
+    semantic_chunking: bool = True
     semantic_similarity_threshold: float = 0.75
 
 

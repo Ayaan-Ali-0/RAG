@@ -241,5 +241,6 @@ class RagEngine:
             final_context_k=self.config.retrieval.final_context_k,
             dense_weight=self.config.retrieval.dense_weight,
             sparse_weight=self.config.retrieval.sparse_weight,
+            reranker_type=self.config.retrieval.reranker,
             vector_store=self.vector_store if self.vector_store.is_initialized else None,
         )
