@@ -10,9 +10,12 @@ set -e
 # 1. Load .env if it exists (env vars from docker compose take precedence)
 # ---------------------------------------------------------------
 if [ -f /app/.env ]; then
-    set -a
-    . /app/.env
-    set +a
+    while IFS='=' read -r key value; do
+        [[ "$key" =~ ^#.*$ || -z "$key" ]] && continue
+        if [ -z "${!key}" ]; then
+            export "$key=$value"
+        fi
+    done < /app/.env
 fi
 
 # ---------------------------------------------------------------
